@@ -14,24 +14,24 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
 HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
 TWITTER_BEARER_TOKEN = os.getenv("TWITTER_BEARER_TOKEN")
-WLFI_AUTHORITY = os.getenv("WLFI_AUTHORITY")  # если известен authority WLFI
+WLFI_AUTHORITY = os.getenv("WLFI_AUTHORITY")
 
 BIRDEYE_TOKEN_LIST_URL = "https://public-api.birdeye.so/public/tokenlist?sort_by=volume_24h_usd"
 BIRDEYE_TOKEN_LIQUIDITY_URL = "https://public-api.birdeye.so/public/token/{}/liquidity"
-HELIUS_METADATA_URL = "https://mainnet.helius-rpc.com/?api-key={}".format(HELIUS_API_KEY)
-TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-
+HELIUS_METADATA_URL = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
 RAYDIUM_PROGRAM_ID = "RVKd61ztZW9sSF2oSUWq4DqvF8BVzTcCB7zgwPjzWqk"
-HELIUS_WEBHOOK_URL = f"https://api.helius.xyz/v0/addresses/{RAYDIUM_PROGRAM_ID}/transactions?api-key={HELIUS_API_KEY}"
+HELIUS_RAYDIUM_TXS = f"https://api.helius.xyz/v0/addresses/{RAYDIUM_PROGRAM_ID}/transactions?api-key={HELIUS_API_KEY}"
+METEORA_POOLS_URL = "https://api.meteora.ag/pools"
 
 HEADERS_BIRDEYE = {"X-API-KEY": BIRDEYE_API_KEY}
 HEADERS_TWITTER = {"Authorization": f"Bearer {TWITTER_BEARER_TOKEN}"}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 
+
 def send_telegram_message(text):
     try:
-        response = requests.post(TELEGRAM_API, data={
+        response = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", data={
             'chat_id': TELEGRAM_CHAT_ID,
             'text': text
         })
@@ -40,7 +40,7 @@ def send_telegram_message(text):
         else:
             logging.error("❌ Telegram error: %s", response.text)
     except Exception as e:
-        logging.error("Exception during Telegram send: %s", e)
+        logging.error("Telegram send failed: %s", e)
 
 
 def fetch_token_list():
@@ -65,12 +65,7 @@ def check_token_metadata(token_address):
         "jsonrpc": "2.0",
         "id": 1,
         "method": "getAccountInfo",
-        "params": [
-            token_address,
-            {
-                "encoding": "jsonParsed"
-            }
-        ]
+        "params": [token_address, {"encoding": "jsonParsed"}]
     }
     try:
         r = requests.post(HELIUS_METADATA_URL, json=body)
@@ -82,11 +77,11 @@ def check_token_metadata(token_address):
 
 
 async def monitor_raydium_activity():
-    logging.info("🔍 Monitoring Raydium activity for WLFI...")
     seen_tx = set()
+    logging.info("📡 Monitoring Raydium...")
     while True:
         try:
-            response = requests.get(HELIUS_WEBHOOK_URL)
+            response = requests.get(HELIUS_RAYDIUM_TXS)
             if response.status_code == 200:
                 txs = response.json().get("transactions", [])
                 for tx in txs:
@@ -95,12 +90,38 @@ async def monitor_raydium_activity():
                         seen_tx.add(sig)
                         desc = tx.get("description", "")
                         if 'wlfi' in desc.lower():
-                            msg = f"🔥 WLFI activity detected on Raydium:\n{desc}\nTx: https://solscan.io/tx/{sig}"
+                            msg = f"💧 WLFI Raydium Activity:\n{desc}\nhttps://solscan.io/tx/{sig}"
                             send_telegram_message(msg)
             await asyncio.sleep(15)
         except Exception as e:
-            logging.error("Raydium watch error: %s", e)
+            logging.error("Raydium error: %s", e)
             await asyncio.sleep(30)
+
+
+async def monitor_meteora():
+    seen_pairs = set()
+    logging.info("🔭 Monitoring Meteora Pools...")
+    while True:
+        try:
+            res = requests.get(METEORA_POOLS_URL)
+            if res.status_code == 200:
+                pools = res.json()
+                for pool in pools:
+                    token_a = pool.get("tokenA", {}).get("symbol", "").lower()
+                    token_b = pool.get("tokenB", {}).get("symbol", "").lower()
+                    if "wlfi" in [token_a, token_b]:
+                        pool_id = pool.get("id")
+                        if pool_id not in seen_pairs:
+                            seen_pairs.add(pool_id)
+                            fee = pool.get("feeRate", "?")
+                            volume = pool.get("volume", "?")
+                            bin_val = pool.get("binValue", "?")
+                            msg = f"🧪 WLFI Pool on Meteora:\nPair: {token_a.upper()} / {token_b.upper()}\nFee: {fee}\nVolume: {volume}\nBin: {bin_val}"
+                            send_telegram_message(msg)
+            await asyncio.sleep(20)
+        except Exception as e:
+            logging.error("Meteora error: %s", e)
+            await asyncio.sleep(40)
 
 
 async def main():
@@ -113,15 +134,16 @@ async def main():
                 seen.add(addr)
                 volume = fetch_volume(addr)
                 is_wlfi = check_token_metadata(addr)
-                msg = f"🚀 Detected WLFI token candidate: {token.get('name')} ({token.get('symbol')})\nAddress: {addr}\n24h Vol: ${volume:,.0f}"
+                msg = f"🚀 WLFI Token Found: {token.get('name')} ({token.get('symbol')})\nAddr: {addr}\nVol(24h): ${volume:,.0f}"
                 if is_wlfi:
-                    msg += "\n✅ Verified authority match!"
+                    msg += "\n✅ Verified Authority"
                 send_telegram_message(msg)
-        await asyncio.sleep(20)
+        await asyncio.sleep(30)
 
 
 if __name__ == "__main__":
     asyncio.run(asyncio.gather(
         main(),
-        monitor_raydium_activity()
+        monitor_raydium_activity(),
+        monitor_meteora()
     ))
