@@ -32,7 +32,8 @@ def send_telegram_message(text):
     try:
         response = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", data={
             'chat_id': TELEGRAM_CHAT_ID,
-            'text': text
+            'text': text,
+            'parse_mode': 'HTML'
         })
         if response.status_code == 200:
             logging.info("✅ Telegram sent: %s", text)
@@ -141,8 +142,15 @@ async def main():
         await asyncio.sleep(30)
 
 
-# 👇 Главное исправление: оборачиваем всё в async функцию
 async def main_loop():
+    # Версия из GitHub (RENDER_GIT_COMMIT), если запускаем на Render
+    version = os.getenv("RENDER_GIT_COMMIT", "unknown")[:7]
+    now = datetime.now().strftime("%d.%m.%Y %H:%M")
+
+    send_telegram_message(
+        f"🔄 <b>WLFI Watcher обновлён</b>\nВерсия: <code>{version}</code>\n⏰ Время: {now}"
+    )
+
     await asyncio.gather(
         main(),
         monitor_raydium_activity(),
