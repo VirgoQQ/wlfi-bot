@@ -48,7 +48,8 @@ def fetch_token_list():
         r = requests.get(BIRDEYE_TOKEN_LIST_URL, headers=HEADERS_BIRDEYE)
         data = r.json().get("data", [])
         return [t for t in data if 'wlfi' in t.get("address", "").lower() or 'wlfi' in t.get("name", "").lower() or 'wlfi' in t.get("symbol", "").lower()]
-    except:
+    except Exception as e:
+        logging.error("Birdeye fetch error: %s", e)
         return []
 
 
@@ -56,7 +57,8 @@ def fetch_volume(token_address):
     try:
         r = requests.get(BIRDEYE_TOKEN_LIQUIDITY_URL.format(token_address), headers=HEADERS_BIRDEYE)
         return r.json().get("data", {}).get("volume_24h_usd", 0)
-    except:
+    except Exception as e:
+        logging.error("Volume fetch error: %s", e)
         return 0
 
 
@@ -72,7 +74,8 @@ def check_token_metadata(token_address):
         result = r.json().get("result", {})
         authority = result.get("value", {}).get("data", {}).get("parsed", {}).get("info", {}).get("owner", "")
         return authority == WLFI_AUTHORITY if WLFI_AUTHORITY else False
-    except:
+    except Exception as e:
+        logging.error("Metadata fetch error: %s", e)
         return False
 
 
@@ -88,10 +91,9 @@ async def monitor_raydium_activity():
                     sig = tx.get("signature")
                     if sig and sig not in seen_tx:
                         seen_tx.add(sig)
-                        desc = tx.get("description", "")
-                        if 'wlfi' in desc.lower():
-                            msg = f"💧 WLFI Raydium Activity:\n{desc}\nhttps://solscan.io/tx/{sig}"
-                            send_telegram_message(msg)
+                        logs = tx.get("meta", {}).get("logMessages", [])
+                        if any("WLFI" in msg for msg in logs):
+                            send_telegram_message(f"💧 WLFI Raydium TX: https://solscan.io/tx/{sig}")
             await asyncio.sleep(15)
         except Exception as e:
             logging.error("Raydium error: %s", e)
@@ -124,26 +126,49 @@ async def monitor_meteora():
             await asyncio.sleep(40)
 
 
+async def monitor_twitter():
+    last_id = None
+    query = "from:WLFI_official OR #WLFI"
+    url = "https://api.twitter.com/2/tweets/search/recent"
+    params = {"query": query, "tweet.fields": "created_at", "max_results": 5}
+    logging.info("🐦 Monitoring Twitter for WLFI...")
+    while True:
+        try:
+            hdr = {"Authorization": f"Bearer {TWITTER_BEARER_TOKEN}"}
+            if last_id:
+                params["since_id"] = last_id
+            r = requests.get(url, headers=hdr, params=params)
+            data = r.json().get("data", [])
+            for tweet in reversed(data):
+                txt = tweet["text"]
+                tid = tweet["id"]
+                ts = tweet["created_at"]
+                send_telegram_message(f"🐦 <b>WLFI Twitter:</b>\n{txt}\n⏰ {ts}")
+                last_id = tid
+        except Exception as e:
+            logging.error("Twitter monitor error: %s", e)
+        await asyncio.sleep(60)
+
+
 async def main():
     seen = set()
     logging.info("🚀 Starting WLFI token scanner...")
     while True:
         wlfi_tokens = fetch_token_list()
+        logging.info("🔍 Birdeye token list fetched: %d entries", len(wlfi_tokens))
         for token in wlfi_tokens:
             addr = token.get("address")
             if addr not in seen:
                 seen.add(addr)
                 volume = fetch_volume(addr)
                 is_wlfi = check_token_metadata(addr)
-                msg = f"🚀 WLFI Token Found: {token.get('name')} ({token.get('symbol')})\nAddr: {addr}\nVol(24h): ${volume:,.0f}"
+                msg = f"🚀 WLFI Token Found: {token.get('name')} ({token.get('symbol')})\nAddr: {addr}\nVol(24h): ${volume:,.0f}"`
                 if is_wlfi:
                     msg += "\n✅ Verified Authority"
                 send_telegram_message(msg)
         await asyncio.sleep(30)
 
-
 async def main_loop():
-    # Версия из GitHub (RENDER_GIT_COMMIT), если запускаем на Render
     version = os.getenv("RENDER_GIT_COMMIT", "unknown")[:7]
     now = datetime.now().strftime("%d.%m.%Y %H:%M")
 
@@ -154,9 +179,9 @@ async def main_loop():
     await asyncio.gather(
         main(),
         monitor_raydium_activity(),
-        monitor_meteora()
+        monitor_meteora(),
+        monitor_twitter(),
     )
-
 
 if __name__ == "__main__":
     asyncio.run(main_loop())
